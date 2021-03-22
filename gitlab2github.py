@@ -1,28 +1,15 @@
-#!/usr/env/bin python3
+#!/usr/bin/env python3
 
 import os
 import aiohttp
 import asyncio
 import logging
+import configparser
 import urllib.parse
 
 async def main():
 
   debug = False
-
-  gitlab_config = {
-    "url": "https://gitlab.com/",
-    "token": "",
-    "project_id": "",
-  }
-
-  github_config = {
-    "url": "https://api.github.com",
-    "user": "",
-    "token": "",
-    "owner": "",
-    "repo": "",
-  }
 
   # Define logger formatter and logger object.
   if debug:
@@ -39,6 +26,21 @@ async def main():
     logger.setLevel(level=os.environ.get("LOGLEVEL", "DEBUG"))
   else:
     logger.setLevel(level=os.environ.get("LOGLEVEL", "INFO"))
+
+  # Read config file.
+  logger.info("Reading config file...")
+  cp = configparser.ConfigParser()
+  try:
+    cp.read("./config.ini")
+  except Exception as e:
+    logger.error("Couldn't open and/ or parse config file 'config.ini'.")
+    if debug:
+      logger.debug(e)
+    return -1
+
+  # Create gitlab and github config dicts.
+  gitlab_config = dict(cp["gitlab"])
+  github_config = dict(cp["github"])
 
   # Prepare tasks to retrieve data from  gitlab.
   logger.info("Creating Gitlab tasks (labels, milestones, issues, and merge requests)...")
@@ -67,28 +69,44 @@ async def main():
   github_labels_tasks = []
   if gitlab_labels is not None:
     if len(gitlab_labels) > 0:
-
       logger.info("Creating Github tasks (labels)...")
-
-      for label in gitlab_labels:
+      for entry in gitlab_labels:
         json = {
-          "name": label["name"],
-          "description": label["description"],
-          "color": label["color"]
+          "name": entry["name"],
+          "description": entry["description"],
+          "color": entry["color"]
         }
         github_labels_tasks.append(asyncio.create_task(github_create_label(logger, debug, github_config, json)))
     else:
       logger.info("There are no labels in this Gitlab project.")
   else:
     logger.info("Failed to retrieve labels from Gitlab.")
-    return -1
+    return -2
 
   results = await asyncio.gather(*github_labels_tasks)
   logger.info("Tasks to create Github labels finished.")
 
-  # await github_create_label(logger, github_config, "test")
+  # Process milestones.
+  github_milestones_tasks = []
+  if gitlab_milestones is not None:
+    if len(gitlab_milestones) > 0:
+      logger.info("Creating Github tasks (milestones)...")
+      for entry in gitlab_milestones:
+        json = {
+          "title": entry["title"],
+          "description": entry["description"],
+          "due_on": entry["due_date"],
+          "state": entry["state"],
+        }
+        github_milestones_tasks.append(asyncio.create_task(github_create_milestone(logger, debug, github_config, json)))
+    else:
+      logger.info("There are no milestones in this Gitlab project.")
+  else:
+    logger.info("Failed to retrieve milestones from Gitlab.")
+    return -3
 
-  
+  results = await asyncio.gather(*github_milestones_tasks)
+  logger.info("Tasks to create Github labels finished.")
 
 ########################################################################################################################
 # Gitlab functions.
@@ -180,8 +198,43 @@ async def github_create_label(logger, debug, config, json):
       logging.error("Failed to create Github label '{name}'.".format(**json))
       if debug:
         logger.debug(e)
-      return {"milestones": None}
+
+async def github_create_milestone(logger, debug, config, json):
+
+  create_milestone_url = urllib.parse.urljoin(config["url"], "/repos/{owner}/{repo}/milestones".format(**config))
+  headers = {
+    'Accept': 'application/vnd.github.v3+json'
+  }
+  auth = aiohttp.BasicAuth(config['user'], config['token'])
+
+  async with aiohttp.ClientSession() as session:
+    try:
+
+      # Replace active by open (https://docs.github.com/en/rest/reference/issues#create-a-milestone).
+      if json["state"] == "active":
+        json["state"] = "open"
+
+      # Remove None due date or convert it to ISO 8601 (YYYY-MM-DDTHH:MM:SSZ).
+      if json["due_on"] is None:
+        del json["due_on"]
+      else:
+        json["due_on"] += "T23:59:00Z"
+
+      # Create milestone if it does not exists.
+      async with session.post(create_milestone_url, headers=headers, auth=auth, json=json) as response:
+        content = await response.json()
+        if "errors" in content.keys():
+          logger.error("Error to create milestone '{title}' (probably already exists).".format(**json))
+          if debug:
+            logger.debug(content.get("errors"))
+        else:
+          logger.info("Milestone '{title}' created.".format(**json))
+    except Exception as e:
+      logging.error("Failed to create Github milestone '{title}'.".format(**json))
+      if debug:
+        logger.debug(e)
 
 if __name__ == "__main__":
+
   loop = asyncio.get_event_loop()
   loop.run_until_complete(main())

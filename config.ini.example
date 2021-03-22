@@ -1,0 +1,19 @@
+[gitlab]
+# Gitlab API URL.
+url = https://gitlab.com/
+# Gitlab access token (https://gitlab.com/-/profile/personal_access_tokens).
+token = 
+# Project ID (you can find it in the settings of your project).
+project_id = 
+
+[github]
+# Github API URL.
+url = https://api.github.com
+# Username of user to make the API calls.
+user = 
+# Github personal access token related to `user` (https://github.com/settings/tokens).
+token = 
+# Github repository owner/ organization (https://github.com/<owner>/<repo>).
+owner = 
+# Github repository name (https://github.com/<owner>/<repo>).
+repo = 
