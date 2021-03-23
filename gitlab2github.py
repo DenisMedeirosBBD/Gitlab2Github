@@ -120,6 +120,7 @@ async def main():
           "title": entry["title"],
           "body": entry["description"],
           "assignees": entry["assignees"],
+          "state": entry["state"],
           # Skipping milestone and labes. For some reason, Gitlab is returning only "opened".
           # "milestone": entry["state"],
           # "labels": entry["state"],
@@ -371,11 +372,14 @@ async def github_create_issue(logger, debug, config, users_mapping, json):
             }
             await github_create_issue_comment(logger, debug, config, users_mapping, issue_number, note_json)
 
+          # Close issue if its status was closed in Gitlab.
+          if json["state"] == "closed":
+            await github_close_issue(logger, debug, config, issue_number)
+
     except Exception as e:
       logging.error("Failed to create Github issue '{title}'.".format(**json))
       if debug:
         logger.debug(repr(e))
-
 
 async def github_create_issue_comment(logger, debug, config, users_mapping, issue_number, note_json):
 
@@ -387,7 +391,6 @@ async def github_create_issue_comment(logger, debug, config, users_mapping, issu
 
   async with aiohttp.ClientSession() as session:
     try:
-
       # Find all possible citations.
       citations = re.findall("@\w+", note_json["body"])
 
@@ -414,6 +417,33 @@ async def github_create_issue_comment(logger, debug, config, users_mapping, issu
       if debug:
         logger.debug(repr(e))
 
+
+async def github_close_issue(logger, debug, config, issue_number):
+
+  close_issue_url = urllib.parse.urljoin(config["url"], "/repos/{owner}/{repo}/issues/{issue_number}".format(issue_number=issue_number, **config))
+  
+  headers = {
+    'Accept': 'application/vnd.github.v3+json'
+  }
+  auth = aiohttp.BasicAuth(config['user'], config['token'])
+
+  async with aiohttp.ClientSession() as session:
+    try:
+
+      # Close issue.
+      async with session.post(close_issue_url, headers=headers, auth=auth, json={"state": "closed"}) as response:
+        content = await response.json()
+        if "errors" in content.keys():
+          logger.error("Error to close issue #{issue_number}.".format(issue_number=issue_number))
+          if debug:
+            logger.debug(content.get("errors"))
+        else:
+          logger.info("Issue #'{issue_number}' closed.".format(issue_number=issue_number))
+
+    except Exception as e:
+      logging.error("Failed to close Github issue.")
+      if debug:
+        logger.debug(repr(e))
 
 async def github_create_pull_request(logger, debug, config, users_mapping, json):
 
