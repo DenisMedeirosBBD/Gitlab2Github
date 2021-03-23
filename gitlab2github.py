@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import aiohttp
 import asyncio
 import logging
@@ -9,7 +10,7 @@ import urllib.parse
 
 async def main():
 
-  debug = False
+  debug = True
 
   # Define logger formatter and logger object.
   if debug:
@@ -35,12 +36,13 @@ async def main():
   except Exception as e:
     logger.error("Couldn't open and/ or parse config file 'config.ini'.")
     if debug:
-      logger.debug(e)
+      logger.debug(repr(e))
     return -1
 
   # Create gitlab and github config dicts.
   gitlab_config = dict(cp["gitlab"])
   github_config = dict(cp["github"])
+  users_mapping = dict(cp["users-mapping"])
 
   # Prepare tasks to retrieve data from  gitlab.
   logger.info("Creating Gitlab tasks (labels, milestones, issues, and merge requests)...")
@@ -65,48 +67,73 @@ async def main():
   # To create Github content, the order matters (some issues may have references to labels or milestones.)
   # Also, if labels or milestones fails, the program should stop (for the same reason).
 
-  # Process labels.
-  github_labels_tasks = []
-  if gitlab_labels is not None:
-    if len(gitlab_labels) > 0:
-      logger.info("Creating Github tasks (labels)...")
-      for entry in gitlab_labels:
-        json = {
-          "name": entry["name"],
-          "description": entry["description"],
-          "color": entry["color"]
-        }
-        github_labels_tasks.append(asyncio.create_task(github_create_label(logger, debug, github_config, json)))
-    else:
-      logger.info("There are no labels in this Gitlab project.")
-  else:
-    logger.info("Failed to retrieve labels from Gitlab.")
-    return -2
+  # # Process labels.
+  # github_labels_tasks = []
+  # if gitlab_labels is not None:
+  #   if len(gitlab_labels) > 0:
+  #     logger.info("Creating Github tasks (labels)...")
+  #     for entry in gitlab_labels:
+  #       json = {
+  #         "name": entry["name"],
+  #         "description": entry["description"],
+  #         "color": entry["color"]
+  #       }
+  #       github_labels_tasks.append(asyncio.create_task(github_create_label(logger, debug, github_config, json)))
+  #   else:
+  #     logger.info("There are no labels in this Gitlab project.")
+  # else:
+  #   logger.info("Failed to retrieve labels from Gitlab.")
+  #   return -2
 
-  results = await asyncio.gather(*github_labels_tasks)
-  logger.info("Tasks to create Github labels finished.")
+  # results = await asyncio.gather(*github_labels_tasks)
+  # logger.info("Tasks to create Github labels finished.")
 
-  # Process milestones.
-  github_milestones_tasks = []
-  if gitlab_milestones is not None:
-    if len(gitlab_milestones) > 0:
-      logger.info("Creating Github tasks (milestones)...")
-      for entry in gitlab_milestones:
+  # # Process milestones.
+  # github_milestones_tasks = []
+  # if gitlab_milestones is not None:
+  #   if len(gitlab_milestones) > 0:
+  #     logger.info("Creating Github tasks (milestones)...")
+  #     for entry in gitlab_milestones:
+  #       json = {
+  #         "title": entry["title"],
+  #         "description": entry["description"],
+  #         "due_on": entry["due_date"],
+  #         "state": entry["state"],
+  #       }
+  #       github_milestones_tasks.append(asyncio.create_task(github_create_milestone(logger, debug, github_config, json)))
+  #   else:
+  #     logger.info("There are no milestones in this Gitlab project.")
+  # else:
+  #   logger.info("Failed to retrieve milestones from Gitlab.")
+  #   return -3
+
+  # results = await asyncio.gather(*github_milestones_tasks)
+  # logger.info("Tasks to create Github labels finished.")
+
+  # Process issues.
+  github_issues_tasks = []
+  if gitlab_issues is not None:
+    if len(gitlab_issues) > 0:
+      logger.info("Creating Github tasks (issues)...")
+      for entry in gitlab_issues:
         json = {
           "title": entry["title"],
-          "description": entry["description"],
-          "due_on": entry["due_date"],
-          "state": entry["state"],
+          "body": entry["description"],
+          "assignees": entry["assignees"],
+          # Skipping milestone and labes. For some reason, Gitlab is returning only "opened".
+          # "milestone": entry["state"],
+          # "labels": entry["state"],
+          "notes": entry["notes"],
         }
-        github_milestones_tasks.append(asyncio.create_task(github_create_milestone(logger, debug, github_config, json)))
+        github_issues_tasks.append(asyncio.create_task(github_create_issue(logger, debug, github_config, users_mapping, json)))
     else:
-      logger.info("There are no milestones in this Gitlab project.")
+      logger.info("There are no issues in this Gitlab project.")
   else:
-    logger.info("Failed to retrieve milestones from Gitlab.")
+    logger.info("Failed to retrieve issues from Gitlab.")
     return -3
 
-  results = await asyncio.gather(*github_milestones_tasks)
-  logger.info("Tasks to create Github labels finished.")
+  results = await asyncio.gather(*github_issues_tasks)
+  logger.info("Tasks to create Github issues finished.")  
 
 ########################################################################################################################
 # Gitlab functions.
@@ -119,11 +146,31 @@ async def get_gitlab_issues(logger, debug, config):
   async with aiohttp.ClientSession() as session:
     try:
       async with session.get(issues_url, headers=headers) as response:
-        return await response.json()
+        content = await response.json()
+        # Get notes for each issue.
+        for issue in content:
+          notes = await get_gitlab_issue_notes(logger, debug, config, issue["iid"])
+          issue["notes"] = notes
+        return content
     except Exception as e:
       logging.error("Failed to retrive Gitlab issues.")
       if debug:
-        logger.debug(e)
+        logger.debug(str(e))
+      return None
+
+async def get_gitlab_issue_notes(logger, debug, config, issue_iid):
+
+  issues_notes_url = urllib.parse.urljoin(config["url"], "/api/v4/projects/{project_id}/issues/{issue_iid}/notes".format(issue_iid=issue_iid, **config))
+  headers = {'PRIVATE-TOKEN': config["token"]}
+
+  async with aiohttp.ClientSession() as session:
+    try:
+      async with session.get(issues_notes_url, headers=headers) as response:
+        return await response.json()
+    except Exception as e:
+      logging.error("Failed to retrive Gitlab issues notes.")
+      if debug:
+        logger.debug(repr(e))
       return None
 
 async def get_gitlab_labels(logger, debug, config):
@@ -138,7 +185,7 @@ async def get_gitlab_labels(logger, debug, config):
     except Exception as e:
       logging.error("Failed to retrive Gitlab labels.")
       if debug:
-        logger.debug(e)
+        logger.debug(repr(e))
       return None
 
 async def get_gitlab_milestones(logger, debug, config):
@@ -152,7 +199,7 @@ async def get_gitlab_milestones(logger, debug, config):
     except Exception as e:
       logging.error("Failed to retrive Gitlab milestones.")
       if debug:
-        logger.debug(e)
+        logger.debug(repr(e))
       return None
 
 async def get_gitlab_merge_requests(logger, debug, config):
@@ -166,7 +213,7 @@ async def get_gitlab_merge_requests(logger, debug, config):
     except Exception as e:
       logging.error("Failed to retrive Gitlab merge requests.")
       if debug:
-        logger.debug(e)
+        logger.debug(repr(e))
       return None
 
 ########################################################################################################################
@@ -197,7 +244,7 @@ async def github_create_label(logger, debug, config, json):
     except Exception as e:
       logging.error("Failed to create Github label '{name}'.".format(**json))
       if debug:
-        logger.debug(e)
+        logger.debug(repr(e))
 
 async def github_create_milestone(logger, debug, config, json):
 
@@ -232,7 +279,95 @@ async def github_create_milestone(logger, debug, config, json):
     except Exception as e:
       logging.error("Failed to create Github milestone '{title}'.".format(**json))
       if debug:
-        logger.debug(e)
+        logger.debug(repr(e))
+
+async def github_create_issue(logger, debug, config, users_mapping, json):
+
+  create_issue_url = urllib.parse.urljoin(config["url"], "/repos/{owner}/{repo}/issues".format(**config))
+  headers = {
+    'Accept': 'application/vnd.github.v3+json'
+  }
+  auth = aiohttp.BasicAuth(config['user'], config['token'])
+
+  async with aiohttp.ClientSession() as session:
+    try:
+      
+      # Remove None fields (assignee, assignees, labels, etc) (https://docs.github.com/en/rest/reference/issues#create-an-issue).
+      for k in list(json.keys()):
+        if json[k] == None:
+          del json[k]
+
+      # Replace assignee based on user mapping.
+      # The assignee is a dict like {'id': , 'name': '', 'username': '', 'state': '', 'avatar_url': ''}
+      if "assignees" in json.keys():
+        github_assignees = []
+        for assignee in json["assignees"]:
+          key = assignee["username"].lower()
+          if key in users_mapping.keys():
+            github_assignees.append(users_mapping[key])
+        json["assignees"] = github_assignees
+
+      # Create issue.
+      async with session.post(create_issue_url, headers=headers, auth=auth, json=json) as response:
+        content = await response.json()
+
+        if "errors" in content.keys():
+          logger.error("Error to create issue '{title}' (probably already exists).".format(**json))
+          if debug:
+            logger.debug(content.get("errors"))
+        else:
+          logger.info("Issue '{title}' created.".format(**json))
+          # Add issues notes/ comments.
+          issue_number = content["number"]
+          for note in json["notes"]:
+            note_json = {
+              "body": note["body"]
+            }
+            await github_create_issue_comment(logger, debug, config, users_mapping, issue_number, note_json)
+
+    except Exception as e:
+      logging.error("Failed to create Github issue '{title}'.".format(**json))
+      if debug:
+        logger.debug(repr(e))
+
+
+async def github_create_issue_comment(logger, debug, config, users_mapping, issue_number, note_json):
+
+  create_issue_comment_url = urllib.parse.urljoin(config["url"], "/repos/{owner}/{repo}/issues/{issue_number}/comments".format(issue_number=issue_number, **config))
+  headers = {
+    'Accept': 'application/vnd.github.v3+json'
+  }
+  auth = aiohttp.BasicAuth(config['user'], config['token'])
+
+  async with aiohttp.ClientSession() as session:
+    try:
+
+      # Find all possible citations.
+      citations = re.findall("@\w+", note_json["body"])
+
+      # Check if the user is in the user-mapping.
+      for person in citations:
+        key = person[1::].lower()
+        if key in users_mapping.keys():
+          # Replace username.
+          new_username = users_mapping[key]
+          note_json["body"] = re.sub(key, new_username, note_json["body"], flags=re.IGNORECASE)
+
+      # Create issue comment.
+      async with session.post(create_issue_comment_url, headers=headers, auth=auth, json=note_json) as response:
+        content = await response.json()
+        if "errors" in content.keys():
+          logger.error("Error to create issue comment (probably already exists).".format(**note_json))
+          if debug:
+            logger.debug(content.get("errors"))
+        else:
+          logger.info("Issue comment for issue #'{issue_number}' created.".format(issue_number=issue_number, **note_json))
+
+    except Exception as e:
+      logging.error("Failed to create Github issue comment.")
+      if debug:
+        logger.debug(repr(e))
+
 
 if __name__ == "__main__":
 

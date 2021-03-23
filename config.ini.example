@@ -17,3 +17,6 @@ token =
 owner = 
 # Github repository name (https://github.com/<owner>/<repo>).
 repo = 
+
+[users-mapping]
+# Gitlab Username = Github Username
