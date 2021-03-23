@@ -62,53 +62,53 @@ async def main():
   gitlab_issues = results[0]
   gitlab_labels = results[1]
   gitlab_milestones = results[2]
-  gitlab_milestones_merge_requests = results[3]
+  gitlab_merge_requests = results[3]
 
   # To create Github content, the order matters (some issues may have references to labels or milestones.)
   # Also, if labels or milestones fails, the program should stop (for the same reason).
 
-  # # Process labels.
-  # github_labels_tasks = []
-  # if gitlab_labels is not None:
-  #   if len(gitlab_labels) > 0:
-  #     logger.info("Creating Github tasks (labels)...")
-  #     for entry in gitlab_labels:
-  #       json = {
-  #         "name": entry["name"],
-  #         "description": entry["description"],
-  #         "color": entry["color"]
-  #       }
-  #       github_labels_tasks.append(asyncio.create_task(github_create_label(logger, debug, github_config, json)))
-  #   else:
-  #     logger.info("There are no labels in this Gitlab project.")
-  # else:
-  #   logger.info("Failed to retrieve labels from Gitlab.")
-  #   return -2
+  # Process labels.
+  github_labels_tasks = []
+  if gitlab_labels is not None:
+    if len(gitlab_labels) > 0:
+      logger.info("Creating Github tasks (labels)...")
+      for entry in gitlab_labels:
+        json = {
+          "name": entry["name"],
+          "description": entry["description"],
+          "color": entry["color"]
+        }
+        github_labels_tasks.append(asyncio.create_task(github_create_label(logger, debug, github_config, json)))
+    else:
+      logger.info("There are no labels in this Gitlab project.")
+  else:
+    logger.info("Failed to retrieve labels from Gitlab.")
+    return -2
 
-  # results = await asyncio.gather(*github_labels_tasks)
-  # logger.info("Tasks to create Github labels finished.")
+  results = await asyncio.gather(*github_labels_tasks)
+  logger.info("Tasks to create Github labels finished.")
 
-  # # Process milestones.
-  # github_milestones_tasks = []
-  # if gitlab_milestones is not None:
-  #   if len(gitlab_milestones) > 0:
-  #     logger.info("Creating Github tasks (milestones)...")
-  #     for entry in gitlab_milestones:
-  #       json = {
-  #         "title": entry["title"],
-  #         "description": entry["description"],
-  #         "due_on": entry["due_date"],
-  #         "state": entry["state"],
-  #       }
-  #       github_milestones_tasks.append(asyncio.create_task(github_create_milestone(logger, debug, github_config, json)))
-  #   else:
-  #     logger.info("There are no milestones in this Gitlab project.")
-  # else:
-  #   logger.info("Failed to retrieve milestones from Gitlab.")
-  #   return -3
+  # Process milestones.
+  github_milestones_tasks = []
+  if gitlab_milestones is not None:
+    if len(gitlab_milestones) > 0:
+      logger.info("Creating Github tasks (milestones)...")
+      for entry in gitlab_milestones:
+        json = {
+          "title": entry["title"],
+          "description": entry["description"],
+          "due_on": entry["due_date"],
+          "state": entry["state"],
+        }
+        github_milestones_tasks.append(asyncio.create_task(github_create_milestone(logger, debug, github_config, json)))
+    else:
+      logger.info("There are no milestones in this Gitlab project.")
+  else:
+    logger.info("Failed to retrieve milestones from Gitlab.")
+    return -3
 
-  # results = await asyncio.gather(*github_milestones_tasks)
-  # logger.info("Tasks to create Github labels finished.")
+  results = await asyncio.gather(*github_milestones_tasks)
+  logger.info("Tasks to create Github labels finished.")
 
   # Process issues.
   github_issues_tasks = []
@@ -133,7 +133,33 @@ async def main():
     return -3
 
   results = await asyncio.gather(*github_issues_tasks)
-  logger.info("Tasks to create Github issues finished.")  
+  logger.info("Tasks to create Github issues finished.")
+
+  # Process pull requets.
+  github_pull_requests_tasks = []
+  if gitlab_merge_requests is not None:
+    if len(gitlab_merge_requests) > 0:
+      logger.info("Creating Github tasks (pull requests)...")
+      for entry in gitlab_merge_requests:
+        # Ignore closed merge requests.
+        if entry["state"] == "closed":
+          continue
+        json = {
+          "title": entry["title"],
+          "body": entry["description"],
+          "head": entry["source_branch"],
+          "base": entry["target_branch"],
+          "notes": entry["notes"],
+        }
+        github_pull_requests_tasks.append(asyncio.create_task(github_create_pull_request(logger, debug, github_config, users_mapping, json)))
+    else:
+      logger.info("There are no merge requests in this Gitlab project.")
+  else:
+    logger.info("Failed to retrieve merge requests from Gitlab.")
+    return -3
+
+  results = await asyncio.gather(*github_pull_requests_tasks)
+  logger.info("Tasks to create Github pull requests finished.")
 
 ########################################################################################################################
 # Gitlab functions.
@@ -209,9 +235,29 @@ async def get_gitlab_merge_requests(logger, debug, config):
   async with aiohttp.ClientSession() as session:
     try:
       async with session.get(issues_url, headers=headers) as response:
-        return await response.json()
+        content = await response.json()
+        # Get notes for each issue.
+        for merge_request in content:
+          notes = await get_gitlab_merge_requests_notes(logger, debug, config, merge_request["iid"])
+          merge_request["notes"] = notes
+        return content
     except Exception as e:
       logging.error("Failed to retrive Gitlab merge requests.")
+      if debug:
+        logger.debug(repr(e))
+      return None
+
+async def get_gitlab_merge_requests_notes(logger, debug, config, merge_request_iid):
+
+  merge_request_notes_url = urllib.parse.urljoin(config["url"], "/api/v4/projects/{project_id}/merge_requests/{merge_request_iid}/notes".format(merge_request_iid=merge_request_iid, **config))
+  headers = {'PRIVATE-TOKEN': config["token"]}
+
+  async with aiohttp.ClientSession() as session:
+    try:
+      async with session.get(merge_request_notes_url, headers=headers) as response:
+        return await response.json()
+    except Exception as e:
+      logging.error("Failed to retrive Gitlab issues notes.")
       if debug:
         logger.debug(repr(e))
       return None
@@ -291,7 +337,7 @@ async def github_create_issue(logger, debug, config, users_mapping, json):
 
   async with aiohttp.ClientSession() as session:
     try:
-      
+
       # Remove None fields (assignee, assignees, labels, etc) (https://docs.github.com/en/rest/reference/issues#create-an-issue).
       for k in list(json.keys()):
         if json[k] == None:
@@ -361,13 +407,52 @@ async def github_create_issue_comment(logger, debug, config, users_mapping, issu
           if debug:
             logger.debug(content.get("errors"))
         else:
-          logger.info("Issue comment for issue #'{issue_number}' created.".format(issue_number=issue_number, **note_json))
+          logger.info("Comment for issue #'{issue_number}' created.".format(issue_number=issue_number, **note_json))
 
     except Exception as e:
       logging.error("Failed to create Github issue comment.")
       if debug:
         logger.debug(repr(e))
 
+
+async def github_create_pull_request(logger, debug, config, users_mapping, json):
+
+  create_pull_request_url = urllib.parse.urljoin(config["url"], "/repos/{owner}/{repo}/pulls".format(**config))
+  headers = {
+    'Accept': 'application/vnd.github.v3+json'
+  }
+  auth = aiohttp.BasicAuth(config['user'], config['token'])
+
+  async with aiohttp.ClientSession() as session:
+    try:
+
+      # Remove None fields (https://docs.github.com/en/rest/reference/pulls#create-a-pull-request).
+      for k in list(json.keys()):
+        if json[k] == None:
+          del json[k]
+
+      # Create pull request.
+      async with session.post(create_pull_request_url, headers=headers, auth=auth, json=json) as response:
+        content = await response.json()
+        if "errors" in content.keys():
+          logger.error("Error to create pull request '{title}' (probably already exists).".format(**json))
+          if debug:
+            logger.debug(content.get("errors"))
+        else:
+          logger.info("Pull request '{title}' created.".format(**json))
+          # Add pull requests notes/ comments.
+          pull_number = content["number"]
+          for note in json["notes"]:
+            note_json = {
+              "body": note["body"]
+            }
+            # A comment in a merge request webpage is equivalent to a comment in a issue.
+            await github_create_issue_comment(logger, debug, config, users_mapping, pull_number, note_json)
+
+    except Exception as e:
+      logging.error("Failed to create Github pull request '{title}'.".format(**json))
+      if debug:
+        logger.debug(repr(e))
 
 if __name__ == "__main__":
 
