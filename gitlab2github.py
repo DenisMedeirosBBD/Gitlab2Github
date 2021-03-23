@@ -10,7 +10,7 @@ import urllib.parse
 
 async def main():
 
-  debug = True
+  debug = False
 
   # Define logger formatter and logger object.
   if debug:
@@ -116,9 +116,21 @@ async def main():
     if len(gitlab_issues) > 0:
       logger.info("Creating Github tasks (issues)...")
       for entry in gitlab_issues:
+
+        username = entry["author"]["username"]
+        created_at = entry["created_at"]
+
+        key = username.lower()
+        if key in users_mapping.keys():
+          username = users_mapping[key]
+
+        body = "Migrated issue created by @{} at {}.\n".format(username, created_at)
+        body += 20 * "-" + "\n\n"
+        body +=  entry["description"]
+
         json = {
           "title": entry["title"],
-          "body": entry["description"],
+          "body":  body,
           "assignees": entry["assignees"],
           "state": entry["state"],
           # Skipping milestone and labes. For some reason, Gitlab is returning only "opened".
@@ -145,9 +157,21 @@ async def main():
         # Ignore closed merge requests.
         if entry["state"] == "closed":
           continue
+
+        username = entry["author"]["username"]
+        created_at = entry["created_at"]
+
+        key = username.lower()
+        if key in users_mapping.keys():
+          username = users_mapping[key]
+
+        body = "Migrated pull request created by @{} at {}.\n".format(username, created_at)
+        body += 20 * "-" + "\n\n"
+        body +=  entry["description"]
+
         json = {
           "title": entry["title"],
-          "body": entry["description"],
+          "body": body,
           "head": entry["source_branch"],
           "base": entry["target_branch"],
           "notes": entry["notes"],
@@ -367,8 +391,20 @@ async def github_create_issue(logger, debug, config, users_mapping, json):
           # Add issues notes/ comments.
           issue_number = content["number"]
           for note in json["notes"]:
+
+            username = note["author"]["username"]
+            created_at = note["created_at"]
+
+            key = username.lower()
+            if key in users_mapping.keys():
+              username = users_mapping[key]
+
+            body = "Migrated note created by @{} at {}.\n".format(username, created_at)
+            body += 20 * "-" + "\n\n"
+            body +=  note["body"]
+
             note_json = {
-              "body": note["body"]
+              "body": body
             }
             await github_create_issue_comment(logger, debug, config, users_mapping, issue_number, note_json)
 
@@ -473,8 +509,20 @@ async def github_create_pull_request(logger, debug, config, users_mapping, json)
           # Add pull requests notes/ comments.
           pull_number = content["number"]
           for note in json["notes"]:
+
+            username = note["author"]["username"]
+            created_at = note["created_at"]
+
+            key = username.lower()
+            if key in users_mapping.keys():
+              username = users_mapping[key]
+
+            body = "Migrated note created by @{} at {}.\n".format(username, created_at)
+            body += 20 * "-" + "\n\n"
+            body +=  note["body"]
+
             note_json = {
-              "body": note["body"]
+              "body": body,
             }
             # A comment in a merge request webpage is equivalent to a comment in a issue.
             await github_create_issue_comment(logger, debug, config, users_mapping, pull_number, note_json)
